@@ -1,0 +1,166 @@
+#Script jq
+jq -r '.Event.Object[] | .Attribute[] | select(.type == "sha256") | .value' threats.json
+jq -r '.Event.Object[] | .Attribute[] | select(.type == "filename") | .value' threats.json
+
+#Misc
+(index="windows_powershell") OR (index="windows_sysmon" FileCreate) OR (index="windows_sysmon" ProcessCreate)
+
+(index="windows_powershell") OR (index="windows_sysmon" FileCreate) OR (index="windows_sysmon" ProcessCreate)
+ host="INTERNAL1" ParentImage!="C:\\Windows\\System32\\svchost.exe" ParentImage!="C:\\Windows\\System32\\services.exe" CommandLine!="\"C:\\Program Files (x86)\\Microsoft\\EdgeUpdate\\MicrosoftEdgeUpdate.exe\" /ua /installsource core" Image!="C:\\Windows\\System32\\CompatTelRunner.exe" Image!="C:\\Windows\\System32\\LogonUI.exe" ParentImage!="C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunkd.exe" ParentImage!="C:\\Windows\\System32\\smss.exe" ParentImage!="C:\\Program Files\\SplunkUniversalForwarder\\bin\\splunk.exe" ParentImage!="C:\\Windows\\System32\\winlogon.exe" ParentImage!="C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\128.0.2739.79\\Installer\\setup.exe"
+| table  _time, CommandLine, TargetFilename, ParentImage, Image
+
+
+#Finding malware 
+## Potential file IOC
+index=* AND ParentImage=* | where like(ParentImage, "%Users%") | where NOT like(ParentImage, "%OneDrive%OneDrive%.exe%") | where NOT like(ParentImage, "%Microsoft VS Code%Code.exe%") | table _time, host, User, ParentImage, Image | sort - _time
+index=* AND ParentImage=* | where like(ParentImage, "%Users%") | where NOT like(ParentImage, "%OneDrive%OneDrive%.exe%") | where NOT like(ParentImage, "%Microsoft VS Code%Code.exe%") | table _time, host, User, ParentImage, Image, CommandLine | sort - _time
+
+index=* "Zone.Identifier"  | table _time, host, User, TargetFilename | sort - _time
+index=* "Zone.Identifier"  | where NOT like(TargetFilename, "%website_check%html5up-massively%") | table _time, host, User, TargetFilename | sort - _time
+
+index=* AND Company=* Company!="Microsoft Corporation" Company!="VMware, Inc." Company!="Microsoft Corp." ParentImage!="C:\\Windows\\System32\\svchost.exe" | table _time, host, User, Image, CommandLine, Company | sort - _time
+
+
+## potentiel run malware files (Anydesk, l9k1JEYlHZ, db_update)
+index=* AND ParentImage=*
+| where match(Image, "(?i).*Users.*")
+| where match(ParentImage, "(?i).*(powershell\.exe|cmd\.exe)")
+| where NOT match(Image, "(?i).*Users.*OneDrive.*\.exe.*")
+| where NOT match(ParentImage, "(?i).*Microsoft\s+VS\s+Code.*Code\.exe.*")
+| table _time, host, User, ParentImage, Image, CommandLine | sort - _time
+
+## potential complementary IOC (image_slider)
+index=* AND Image=* 
+| where match(TargetFilename, "(?i).*Users.*")
+| where match(Image, "(?i).*(powershell\.exe|cmd\.exe)")
+| where NOT match(Image, "(?i).*Users.*OneDrive.*\.exe.*")
+| table _time, host, Image, TargetFilename | sort - _time
+
+## file generating network events
+index=*  TaskCategory=Network* | where NOT ( like(Image, "C:%Program Files%")  OR like(Image, "%Local%Microsoft%OneDrive%") OR like(Image, "%Windows%ystem32%") )| stats  count by Image
+
+## powershell execution on file 
+index="windows_powershell" | where len(Message) < 3000 | where NOT (like(Message, "%Creating Scriptblock text%prompt%ScriptBlock ID:%") OR like(Message, "%Set-StrictMode -Version 1; %$_%ScriptBlock ID:%Path:%")  )   | table _time, host, Message | sort - _time
+
+## potential malware : Take relevant company 
+index=* AND Company=* Company!="Microsoft Corporation" Company!="VMware, Inc." Company!="Microsoft Corp." ParentImage!="C:\\Windows\\System32\\svchost.exe" | table _time, host, Image, TargetFilename, Company
+
+index=* AND (Image="*\\Users\\*" OR Image="*\\AppData\\*") | where NOT like(Image, "%Users%AppData%Temp%DismHost.exe") | where NOT like(Image, "%Local%Microsoft%OneDrive%") | stats  count by Image,  Description, Company
+
+## check every event where exe malware is ParentImage
+index=* | where (like(ParentImage,"%security_update.exe") OR like(ParentImage,"%dbstatus.exe") OR like(ParentImage,"%ps_exec.exe") OR like(ParentImage,"%db_exfil.exe") OR like(ParentImage,"%nxc.exe") OR like(ParentImage,"%tickets.exe") OR like(ParentImage,"%creds.exe")) | table _time, host, User, ParentImage, CommandLine, TaskCategory | sort - _time
+
+## mimikatz detection 
+index=* (CommandLine="*sekurlsa*" OR CommandLine="*logonpasswords*" OR Image="*mimikatz.exe*") | table _time, host, User, CommandLine, Description, OriginalFileName | sort - _time
+
+## Potential User or AppData malware
+index=* AND (Image="*\\Users\\*" OR Image="*\\AppData\\*") | where NOT ( like(Image, "%AppData%Local%Temp%DismHost.exe") OR like(Image, "%AppData%Local%Microsoft%OneDrive%")  ) | stats count by  Image
+
+## Rare Parent-Child Combinations
+index=* EventCode=4688 | stats count by Creator_Process_Name, New_Process_Name
+
+## WMIC Abuse
+index=* CommandLine="*wmic*"
+
+# potential attacker IP 
+index=* AND DestinationIp | where match(DestinationIp, "(?i).*192\.168\.*") | table _time, host, DestinationIp, DestinationPort, Image | sort - _time
+
+# Malicious activity on remote host
+## Remote Service Creation
+index=* EventCode=4697
+
+## services installed 
+index=* AND EventCode=7045 | table _time, host, Service_Name, Service_File_Name, Service_Start_Type | sort - _time
+
+## Login from with NTLM
+index=* EventCode=4624 AND Logon_Process="NtlmSsp"  AND NOT (host="DC1") | table _time, host, Account_Name, Logon_Type, Logon_Process | sort - _time
+
+## Interactive logon
+index=* EventCode=4624 Logon_Type=10 | table _time, host, Source_Network_Address, Account_Name, Process_Name  | sort - _time
+
+## lateral movement #check perentage of host
+index=* AND SourceIp="10.25.25.120"
+index=*  AND  Workstation_Name=WK02  | table _time, host, dest_nt_host, name, Source_Network_Address, Account_Name, Process_Name  | sort - _time
+
+## Check weird workstation
+index=* earliest="07/24/2024:09:51:00" latest="07/26/2024:09:54:00"  AND Workstation_Name=* 
+
+## check what happened between two machines within a time range
+index=* AND (host="WK3" OR host="DB1") AND TaskCategory=Execute* | table _time, host, Message | sort - _time
+index=* earliest="07/24/2024:17:57:26" latest="07/26/2024:12:59:26"  AND ( ((host="WK3" OR host="DB1") AND TaskCategory=Execute*) ) | where NOT (like(Message, "%Creating Scriptblock text%prompt%ScriptBlock ID:%") OR like(Message, "%Set-StrictMode -Version 1; %$_%ScriptBlock ID:%Path:%")  )   | table  _time, host, Account_Name, SAM_Account_Name, Group_Name, Message  | sort  -_time
+index=* AND (host="WK3" OR host="DB1") AND TaskCategory!=Network* | table _time, host, CommandLine, Account_Name, Image, TaskCategory, TargetFilename, Message, | sort - _time
+
+
+# groupping
+index="*" SourceHostname="WK1.megacorpone.com"| top limit=20 DestinationHostname
+index="*" SourceHostname="WK1.megacorpone.com"| top DestinationHostname
+
+# persistence
+## new account, adding group 
+index=* AND (EventCode=4728 OR EventCode=4732 OR EventCode=4720) | table _time, host, result, New_Account_Account_Name,Account_Name, SAM_Account_Name, Group_Name | sort - _time
+
+## scheduled task
+index=* AND EventCode=106
+
+## registry     
+index=* TaskCategory=Process* "C:\\windows\\tasks\\*" | table _time, host, ParentImage, CommandLine | sort - _time
+index=* AND ("CurentVersion" OR "schtasks" OR "ScheduledTask" OR "reg add" OR "sc create" OR "New-Service")
+
+ 
+# files potentially generaring Net-NTLMv2 authentication requests
+index="*" ("*.rtf" OR "*.scf" OR "*.url" OR "*.wmx" OR "*.accdb" OR "*.pub" OR "*.asx" OR "*.doc" OR "*.docx" OR "*.xls" OR "*.xlsx") | table _time TargetFilename Image User
+
+index="*" "intro.asx"
+index="windows_sysmon" EventCode=3 DestinationPort=445
+index="main" host="WK3" EventCode=5379 "wilhelmina"
+index=* EventCode=5379  "192.168.50.188"
+
+index=* EventCode=5379 NOT host="WK3"  | where NOT like(Account_Name,"%$") | stats count by _time, host,  Account_Name  | sort - _time
+
+# Finding with all IOC
+cat he | sed 's/^/"/g' | sed 's/$/" OR /g' | tr "\n" " "
+index=* ("rad09586.tmp.exe" OR "radF02DD.tmp.exe" OR "admin.exe" OR "dwm.exe" OR "192.168.12.231" OR "m.williams" OR "C:\\Windows\\Tasks\\svchost.exe") | table _time, host, TaskCategory, ParentImage, CommandLine, DestinationIp, TargetFilename | sort - _time
+
+# Datetimerange
+index=* earliest="07/24/2024:00:00:00" latest="07/25/2024:11:11:59" 
+
+#Base filter url 
+| table _time, host, CommandLine, TaskCategory, DestinationIp, DestinationPort | sort - _time
+http://192.168.148.134:8000/en-US/app/search/search?q=search%20index%3D*%20%7C%20where%20(like(ParentImage%2C%22%25security_update.exe%22)%20OR%20like(ParentImage%2C%22%25dbstatus.exe%22)%20OR%20like(ParentImage%2C%22%25ps_exec.exe%22)%20OR%20like(ParentImage%2C%22%25db_exfil.exe%22)%20OR%20like(ParentImage%2C%22%25nxc.exe%22)%20OR%20like(ParentImage%2C%22%25tickets.exe%22)%20OR%20like(ParentImage%2C%22%25creds.exe%22))%20%7C%20table%20_time%2C%20host%2C%20CommandLine%2C%20TaskCategory%20%7C%20sort%20-%20_time&display.page.search.mode=smart&dispatch.sample_ratio=1&workload_pool=&earliest=1721847271&latest=1721911800&display.page.search.tab=statistics&display.general.type=statistics&display.statistics.wrap=0&display.statistics.drilldown=cell&display.general.enablePreview=0&display.events.fields=%5B%22host%22%2C%22source%22%2C%22CommandLine%22%2C%22Creator_Process_Name%22%2C%22New_Process_Name%22%2C%22Account_Name%22%2C%22Process_Name%22%2C%22Image%22%2C%22TaskCategory%22%2C%22TargetFilename%22%2C%22Message%22%5D&sid=1749826610.601
+
+
+########################
+# Azure 
+index="azure_appservices" | spath | search eventType="LoginAttempt" username="wilhelmina" status=Successful
+
+index="azure_appservices"
+| spath
+| search username="wilhelmina"
+| table _time eventType page
+| sort _time
+
+index="azure_appservices" | spath | search username="wilhelmina" eventType="FileUpload" | table _time filePath  | sort  _time
+index="azure_appservice-diagnostics" earliest="11/27/2024:10:05:08" latest="11/27/2024:10:06:40" | spath | table _time properties.CsMethod properties.ScStatus properties.CsUriStem properties.Result
+index="azure_appservice-diagnostics" | spath | search properties.CsUriStem="*extensions*" | table _time properties.CsMethod properties.ScStatus properties.CsUriStem properties.Result
+
+index="azure_appservices" earliest="11/27/2024:11:09:00"
+| spath
+| search username="wilhelmina"
+| table _time eventType page
+| sort _time
+
+index="azure_appservices" 
+| spath 
+| search username="wilhelmina" eventType="CommandExecution" 
+| sort _time
+
+index="azure_appservices" 
+| spath 
+| search username="wilhelmina" eventType="CommandExecution" 
+| eval query=tostring(query) 
+| eval query=substr(query, 1, 200) 
+| table _time query output 
+| sort _time
+
+index="azure_vault" earliest="11/27/2024:11:50:00" | spath | search properties.id="https://mco-vault.vault.azure.net*" identity.claim.oid=5993dc2d-7a73-41cd-b2b7-5c3b85965bfe  | table _time operationName resultType properties.clientInfo properties.id | sort _time
+index="azure_vault" earliest="11/27/2024:11:50:00" | spath | search properties.id="https://mco-vault.vault.azure.net*" identity.claim.oid=5993dc2d-7a73-41cd-b2b7-5c3b85965bfe  | table _time operationName resultType properties.clientInfo properties.id | sort _time
